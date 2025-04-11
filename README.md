@@ -1,6 +1,6 @@
 # CDCS Echocardiography, Lipid and Protein Analysis
 
-This repository contains the full R analysis pipeline for the **MDG5241 Midterm Project**, which investigates the correlation between echocardiographic measurements and plasma molecular profiles (lipids and proteins) from the **Cardiovascular Disease Cohort Study (CDCS)**.
+This repository contains the full R analysis pipeline, which investigates the correlation between echocardiographic measurements and plasma molecular profiles (lipids and proteins) from the **Cardiovascular Disease Cohort Study (CDCS)**.
 
 ## 📊 Project Overview
 
