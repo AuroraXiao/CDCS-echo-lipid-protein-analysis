@@ -45,9 +45,11 @@ Open the RMarkdown file and click "Knit" (recommended).
 🧪 Option 2: From R Console
 ```r
 rmarkdown::render("../CDCS-echo-lipid-protein-analysis.Rmd")
+```
 
 💻 Option 3: From Command Line
 ```bash
 Rscript -e "rmarkdown::render('../CDCS-echo-lipid-protein-analysis.Rmd')"
+```
 
-Output: report/MDG5241_midterm_project.html
+Output: CDCS-echo-lipid-protein-analysis.html
