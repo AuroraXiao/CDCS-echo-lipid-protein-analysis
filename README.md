@@ -14,7 +14,9 @@ The project consists of four key components:
 
 ## 🗂️ Directory Structure
 
-├── data/ # Raw and imputed input datasets 
+├── data/ # Raw and imputed input datasets
+
+│ ├── CDCS Echo Dictionary.xlsx
 
 │ ├── Echoparam_Protein_Lipids_combined_CDCS.txt 
 
