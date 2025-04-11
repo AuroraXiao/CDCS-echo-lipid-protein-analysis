@@ -15,10 +15,15 @@ The project consists of four key components:
 ## 🗂️ Directory Structure
 
 ├── data/ # Raw and imputed input datasets 
+
 │ ├── Echoparam_Protein_Lipids_combined_CDCS.txt 
+
 │ ├── clinical data (N=308).txt 
+
 │ └── Echoparam_Protein_Lipids_combined_CDCS_imputed.txt 
+
 ├── CDCS-echo-lipid-protein-analysis.Rmd
+
 ├── README.md
 
 
