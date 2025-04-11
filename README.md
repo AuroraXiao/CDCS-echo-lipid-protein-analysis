@@ -33,6 +33,7 @@ install.packages(c("tidyverse", "ggplot2", "dplyr", "readr"))
 install.packages("BiocManager")
 BiocManager::install("ComplexHeatmap")
 BiocManager::install("circlize")
+```
 
 ### Step 2: Run Full Pipeline
 
