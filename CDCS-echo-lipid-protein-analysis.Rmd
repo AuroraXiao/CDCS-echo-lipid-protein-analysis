@@ -1,0 +1,375 @@
+---
+title: "CDCS-echo-lipid-protein-analysis"
+author: "Riley"
+format: html
+editor: visual
+---
+
+# Section 1 Data management, separation, screening for missing data
+
+This section focuses on preparing the integrated dataset by:
+
+-   📥 Reading and merging **clinical data** and **biomarker data**
+-   🔍 Matching patient IDs between datasets
+-   🧼 Removing variables with too many missing values
+-   📊 Inspecting variable types (protein / lipid / echo)
+-   ✅ Ensuring data consistency before modeling
+
+```{r}
+library(dplyr)
+
+integrated_data <- read.table("D://Code//R//R//Data//Echoparam_Protein_Lipids_combined_CDCS.txt", header = TRUE, sep = "\t", fill = TRUE, fileEncoding = "UTF-8")
+clinical_data <- read.table("D://Code//R//R//Data//clinical data (N=308).txt", header = TRUE, sep = "\t")
+
+clinical_ids <- clinical_data$StudyNo
+integrated_ids <- colnames(integrated_data)[-c(1, 2)]
+match_indices <- match(clinical_ids, integrated_ids)
+integrated_data <- integrated_data[, c(1, 2, match_indices + 2)]
+
+cat(ifelse(ncol(integrated_data) - 2 == nrow(clinical_data), 
+           "Filtering successful: Matched subjects with clinical data.\n", 
+           "Filtering failed: Check the data.\n"))
+
+variable_annotation <- integrated_data[, 1:2]
+integrated_data <- integrated_data[, -c(1, 2)]
+rownames(integrated_data) <- variable_annotation$Feature
+
+integrated_data <- t(integrated_data)
+
+cat("\nVariable class frequencies:\n")
+print(table(variable_annotation$Class))
+
+missing_counts <- colSums(is.na(integrated_data))
+missing_frequency <- missing_counts / nrow(integrated_data)
+high_missing_vars <- names(missing_frequency[missing_frequency > 0.2])
+
+cat("\nVariables with >20% missing values:\n")
+print(high_missing_vars)
+
+```
+
+# Section 2 Correlation between echo and (protein & lipid)
+
+In this section, I examine the overall correlation structure between echocardiographic variables and both lipid and protein biomarkers using:
+
+-   📈 Pearson correlation matrix
+
+-    🔥 Clustered heatmap to visualize global patterns
+
+-    📊 Summary statistics of echo–protein and echo–lipid correlation strength
+
+And further compute the average absolute correlation between echo variables and:
+
+-    Proteins
+
+-    Lipids
+
+```{r}
+library(ComplexHeatmap)
+library(circlize)
+library(grid)
+
+echo_data <- variable_annotation$Feature[variable_annotation$Class == "Echocardiogram"]
+lipids_data <- variable_annotation$Feature[variable_annotation$Class == "Lipid"]
+proteins_data <- variable_annotation$Feature[variable_annotation$Class == "Protein"]
+
+combined_data <- integrated_data[, c(echo_data, lipids_data, proteins_data)]
+cor_matrix <- cor(combined_data, use = "pairwise.complete.obs", method = "pearson")
+
+variable_annotation <- data.frame(
+  variable = colnames(combined_data),
+  type = c(rep("echo", length(echo_data)),
+           rep("lipid", length(lipids_data)),
+           rep("protein", length(proteins_data)))
+)
+
+type_annotation <- HeatmapAnnotation(
+  type = variable_annotation$type,
+  col = list(type = c("echo" = "blue", "lipid" = "green", "protein" = "red"))
+)
+
+heatmap <- Heatmap(cor_matrix, 
+                   name = "Correlation",
+                   show_row_names = FALSE, 
+                   show_column_names = FALSE,
+                   top_annotation = type_annotation,
+                   show_heatmap_legend = TRUE,
+                   cluster_rows = TRUE,
+                   cluster_columns = TRUE)
+draw(heatmap)
+
+cat("\nQuestion C Answer\n")
+cat("1. Proteins and lipids form distinct sub-clusters, indicating weaker correlation.\n")
+cat("2. Echo variables tend to correlate more with proteins than with lipids.\n")
+
+echo_protein_corr <- mean(abs(cor_matrix[echo_data, proteins_data]), na.rm = TRUE)
+echo_lipid_corr <- mean(abs(cor_matrix[echo_data, lipids_data]), na.rm = TRUE)
+
+cat("\nMean absolute correlation:\n")
+cat("Echo vs Proteins:", echo_protein_corr, "\n")
+cat("Echo vs Lipids:", echo_lipid_corr, "\n")
+```
+
+# Section 3 PCA analysis with coloring of patient outcomes.
+
+This section applies Principal Component Analysis (PCA) to the imputed biomarker data. Key steps include:
+
+-    🔄 Data scaling and PCA transformation
+
+-   🧪 Association of the first 6 PCs with patient clinical outcomes via ANOVA
+
+-   🧭 Visualization of significant PCs using:
+
+-   📦 Boxplots of PC values by outcome
+
+-   🌈 2D scatter plot with outcome-based coloring
+
+-   🔁 Confidence ellipses for group separation
+
+The goal is to uncover latent patterns in biomarker profiles that differentiate between MACE outcomes.
+
+```{r}
+library(ggplot2)
+
+imputed_data <- read.table("D://Code//R//R//Data//Echoparam_Protein_Lipids_combined_CDCS_imputed.txt", header = TRUE, sep = "\t", fill = TRUE, fileEncoding = "UTF-8")
+clinical_data <- read.table("D://Code//R//R//Data//clinical data (N=308).txt", header = TRUE, sep = "\t")
+
+outcome_colors<-c("Eventfree" = "darkgray", "recurrentMI" = "orange", "subsequentHF" = "red")
+
+cat("Imputed data dimensions:", dim(imputed_data), "\n")
+cat("Clinical data dimensions:", dim(clinical_data), "\n")
+
+table(clinical_data$Outcome)
+
+row_names <- imputed_data[, 1]
+imputed_data <- imputed_data[, -1]
+rownames(imputed_data) <- row_names
+
+imputed_data_numeric <- apply(imputed_data, 2, as.numeric)
+
+pca_result <- prcomp(imputed_data_numeric, scale. = TRUE)
+
+pc_scores <- as.data.frame(pca_result$x[, 1:6])
+
+pc_with_outcome <- cbind(pc_scores, Outcome = clinical_data$Outcome)
+
+par(mfrow = c(2, 3))
+
+plot_pc_by_outcome <- function(pc_name) {
+  boxplot(as.formula(paste(pc_name, "~ Outcome")), 
+          data = pc_with_outcome,
+          col = outcome_colors[as.character(unique(pc_with_outcome$Outcome))],
+          main = paste(pc_name, "by Outcome"),
+          xlab = "Clinical Outcome",
+          ylab = pc_name)
+}
+
+for (i in 1:6) {
+  plot_pc_by_outcome(paste0("PC", i))
+}
+
+par(mfrow = c(1, 1))
+
+pc_anova_results <- data.frame(PC = character(0), 
+                              F_value = numeric(0),
+                              p_value = numeric(0))
+
+for (i in 1:6) {
+  pc_col <- paste0("PC", i)
+  anova_result <- summary(aov(as.formula(paste(pc_col, "~ Outcome")), data = pc_with_outcome))
+  f_value <- anova_result[[1]]["Outcome", "F value"]
+  p_value <- anova_result[[1]]["Outcome", "Pr(>F)"]
+  
+  pc_anova_results <- rbind(pc_anova_results, 
+                           data.frame(PC = pc_col, F_value = f_value, p_value = p_value))
+}
+
+pc_anova_results <- pc_anova_results[order(pc_anova_results$p_value), ]
+print(pc_anova_results)
+
+best_pcs <- pc_anova_results$PC[1:2]
+  cat("Two PCs most correlated with clinical outcome are:", paste(best_pcs, collapse = " and "), "\n")
+
+
+
+best_pc1 <- best_pcs[1]  
+best_pc2 <- best_pcs[2] 
+
+plot_data <- data.frame(
+  PC1 = pc_with_outcome[[best_pc1]],
+  PC2 = pc_with_outcome[[best_pc2]],
+  Outcome = pc_with_outcome$Outcome
+)
+
+ggplot(plot_data, aes(x = PC1, y = PC2, color = Outcome)) +
+  geom_point(size = 3, alpha = 0.7) +
+  scale_color_manual(values = outcome_colors) +
+  labs(
+    title = paste("Patient projection on", best_pc1, "and", best_pc2),
+    x = best_pc1,
+    y = best_pc2
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5, size = 14),
+    axis.title = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10)
+  ) +
+  stat_ellipse(aes(group = Outcome), type = "t", level = 0.95)
+```
+
+# Section 4 Linear Regression and multiple testing
+
+In this section, I perform multiple linear regressions between:
+
+-   Echo variables (as dependent variables)
+
+-   Protein and lipid markers (as independent variables),\
+    adjusted for **Study Site** and **BMI**.
+
+Key steps:
+
+-   🧮 Generate p-value matrices for echo–lipid and echo–protein relationships
+
+-   📉 Apply multiple testing correction using the **q-value** method
+
+-   📊 Visualize distributions of raw p-values and adjusted q-values via histograms
+
+-   ✅ Report echo variables significantly associated (q \< 0.05) with:
+
+    -   Lipids
+
+    -   Proteins
+
+Finally, I export all results into an Excel file (`Echo_Lipid_Protein_Results.xlsx`) for downstream reporting and interpretation.
+
+```{r}
+library(ggplot2)
+library(openxlsx)
+library(stats)
+library(qvalue)
+library(readxl)
+library(reshape2)
+
+echo_values <-integrated_data[, echo_data]
+lipid_values<- integrated_data[, lipids_data]
+protein_values <-integrated_data[, proteins_data]
+
+lipid_names <- lipids_data
+protein_names<- proteins_data
+echo_names<-echo_data
+
+
+echo_lipid_pvalues<- matrix(NA, nrow=length(lipid_names), ncol=length(echo_names),dimnames=list(lipid_names,echo_names))
+echo_protein_pvalues<- matrix(NA, nrow = length(protein_names),ncol=length(echo_names),dimnames=list(protein_names,echo_names))
+
+cat("\nEcho-Lipid p-values matrix dimensions:", dim(echo_lipid_pvalues))
+cat("\nEcho-Protein p-values matrix dimensions:", dim(echo_protein_pvalues), "\n")
+
+
+clinical_subset<- clinical_data[, c("StudyNo", "Study_Site", "BMI")]
+rownames(clinical_subset)<- clinical_subset$StudyNo
+clinical_subset<- clinical_subset[,-1] 
+
+rownames(echo_values) <-rownames(lipid_values) <-rownames(protein_values) <- rownames(clinical_subset)
+
+for (lipid in lipid_names){
+  for (echo in echo_names){
+    model<-lm(echo_values[,echo] ~ lipid_values[,lipid]+clinical_subset$Study_Site + clinical_subset$BMI)
+    echo_lipid_pvalues[lipid,echo]<-summary(model)$coefficients["lipid_values[, lipid]","Pr(>|t|)"]
+  }
+}
+
+for (protein in protein_names) {
+  for (echo in echo_names) {
+    model <-lm(echo_values[, echo] ~ protein_values[, protein]+ clinical_subset$Study_Site+clinical_subset$BMI)
+    echo_protein_pvalues[protein, echo]<-summary(model)$coefficients["protein_values[, protein]", "Pr(>|t|)"]
+  }
+}
+
+cat("\nFirst few rows of Echo-Lipid p-values:\n")
+print(head(echo_lipid_pvalues,5))
+
+cat("\nFirst few rows of Echo-Protein p-values:\n")
+print(head(echo_protein_pvalues,5))
+
+
+echo_lipid_qvalues <- apply(echo_lipid_pvalues, 2, function(p) qvalue(p)$qvalues)
+echo_protein_qvalues <-apply(echo_protein_pvalues, 2, function(p) qvalue(p)$qvalues)
+
+cat("\nFirst few rows of Echo-Lipid q-values:\n")
+print(head(echo_lipid_qvalues,5))
+
+cat("\nFirst few rows of Echo-Protein q-values:\n")
+print(head(echo_protein_qvalues,5))
+
+
+q_lipid <- apply(echo_lipid_pvalues, 2, function(p) qvalue(p)$qvalues)
+q_protein <- apply(echo_protein_pvalues, 2, function(p) qvalue(p)$qvalues)
+
+p_lipid_long <- melt(echo_lipid_pvalues)
+colnames(p_lipid_long) <- c("Lipid", "Echo", "p_value")
+
+p_protein_long <- melt(echo_protein_pvalues)
+colnames(p_protein_long) <- c("Protein", "Echo", "p_value")
+
+q_lipid_long <- melt(q_lipid)
+colnames(q_lipid_long) <- c("Lipid", "Echo", "q_value")
+
+q_protein_long <- melt(q_protein)
+colnames(q_protein_long) <- c("Protein", "Echo", "q_value")
+
+ggplot(p_lipid_long, aes(x = p_value)) +
+  geom_histogram(bins = 30, fill = "skyblue", alpha = 0.7) +
+  facet_wrap(~ Echo, scales = "free_y") +
+  labs(title = "Echo-Lipid p-value Distributions", x = "p-value", y = "Count") +
+  theme_minimal()
+
+ggplot(p_protein_long, aes(x = p_value)) +
+  geom_histogram(bins = 30, fill = "orange", alpha = 0.7) +
+  facet_wrap(~ Echo, scales = "free_y") +
+  labs(title = "Echo-Protein p-value Distributions", x = "p-value", y = "Count") +
+  theme_minimal()
+
+ggplot(q_lipid_long, aes(x = q_value)) +
+  geom_histogram(bins = 30, fill = "skyblue", alpha = 0.7) +
+  facet_wrap(~ Echo, scales = "free_y") +
+  labs(title = "Echo-Lipid q-value Distributions", x = "q-value", y = "Count") +
+  theme_minimal()
+
+ggplot(q_protein_long, aes(x = q_value)) +
+  geom_histogram(bins = 30, fill = "orange", alpha = 0.7) +
+  facet_wrap(~ Echo, scales = "free_y") +
+  labs(title = "Echo-Protein q-value Distributions", x = "q-value", y = "Count") +
+  theme_minimal()
+
+echo_dict <- readxl::read_excel("D://Code//R//R//Data//CDCS Echo Dictionary.xlsx")
+protein_info <- read.table("D://Code//R//R//Data//CDCS Protein Info.txt", sep="\t", header=TRUE, stringsAsFactors=FALSE, fill=TRUE)
+
+
+significant_echo_lipid <- colnames(q_lipid)[apply(q_lipid,2,function(x) any(x<0.05))]
+significant_echo_protein<-colnames(q_protein)[apply(q_protein,2, function(x) any(x<0.05))]
+
+cat("Significant Echo Variables associated with Lipids:\n", significant_echo_lipid, "\n")
+cat("Significant Echo Variables associated with Proteins:\n", significant_echo_protein, "\n")
+
+
+echo_lipid_pvalues_df <- as.data.frame(echo_lipid_pvalues)
+echo_lipid_qvalues_df <- as.data.frame(q_lipid)
+
+echo_protein_pvalues_df <- as.data.frame(echo_protein_pvalues)
+echo_protein_qvalues_df <- as.data.frame(q_protein)
+
+write.xlsx(list(
+  "Echo-Lipid p-values"=echo_lipid_pvalues_df,
+  "Echo-Lipid q-values"=echo_lipid_qvalues_df,
+  "Echo-Protein p-values"=echo_protein_pvalues_df,
+  "Echo-Protein q-values"=echo_protein_qvalues_df
+), file = "Echo_Lipid_Protein_Results.xlsx", overwrite = TRUE)
+
+cat("\nExport Completed: Echo_Lipid_Protein_Results.xlsx")
+
+
+```
