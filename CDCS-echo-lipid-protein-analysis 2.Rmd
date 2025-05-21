@@ -1,0 +1,366 @@
+---
+title: "CDCS-echo-lipid-protein-analysis 2"
+author: "Riley"
+format: html
+editor: visual
+---
+
+# Section 1
+
+```{r}
+### Session 1: Variable Screening & Visualization
+
+required_pkgs <- c("tidyverse", "pheatmap", "qvalue", "readxl")
+for (pkg in required_pkgs) {
+  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
+  library(pkg, character.only = TRUE)
+}
+
+df <- read_excel("project data/CDCS data - Proteome Echo.xlsx")
+protein_info <- read.delim("project data/CDCS protein info.txt")
+
+train <- df %>% filter(Site == 1)
+test <- df %>% filter(Site == 2)
+
+train <- train %>% mutate(Outcome = ifelse(Outcome == "MACE", 1, 0))
+test <- test %>% mutate(Outcome = ifelse(Outcome == "MACE", 1, 0))
+
+variables <- colnames(train)[!(colnames(train) %in% c("StudyNo", "Outcome", "Site", "Age", "MACE"))]
+
+#Age as predictor
+model_age <- glm(Outcome ~ Age, data = train, family = binomial)
+summary(model_age)
+
+#Age-adjusted logistic regression
+pvals_adj_age <- numeric(length(variables))
+names(pvals_adj_age) <- variables
+
+for (var in variables) {
+  formula <- as.formula(paste("Outcome ~ Age +", var))
+  fit <- try(glm(formula, data = train, family = binomial), silent = TRUE)
+  
+  if (!inherits(fit, "try-error")) {
+    coef_summary <- summary(fit)$coefficients
+    if (nrow(coef_summary) > 2) {
+      pvals_adj_age[var] <- coef_summary[3, 4]
+    } else {
+      pvals_adj_age[var] <- NA
+    }
+  } else {
+    pvals_adj_age[var] <- NA
+  }
+}
+
+hist(na.omit(pvals_adj_age), breaks = 100,
+     main = "Adjusted p-values (Age + Variable)",
+     xlab = "p-value", col = "skyblue")
+
+
+#Unadjusted logistic regression
+pvals_unadjusted <- numeric(length(variables))
+names(pvals_unadjusted) <- variables
+
+for (var in variables) {
+  formula <- as.formula(paste("Outcome ~", var))
+  fit <- try(glm(formula, data = train, family = binomial), silent = TRUE)
+  
+  if (!inherits(fit, "try-error")) {
+    coef_summary <- summary(fit)$coefficients
+    if (nrow(coef_summary) > 1) {
+      pvals_unadjusted[var] <- coef_summary[2, 4]
+    } else {
+      pvals_unadjusted[var] <- NA
+    }
+  } else {
+    pvals_unadjusted[var] <- NA
+  }
+}
+
+hist(na.omit(pvals_unadjusted), breaks = 100,
+     main = "Unadjusted p-values (Variable only)",
+     xlab = "p-value", col = "salmon")
+
+#q-value threshold and heatmap visualization
+qvals <- qvalue(na.omit(pvals_unadjusted))$qvalues
+selected_vars <- names(qvals)[qvals < 0.3]
+
+train_selected <- train %>% select(all_of(selected_vars))
+test_selected <- test %>% select(all_of(selected_vars))
+
+cor_train <- cor(train_selected, use = "pairwise.complete.obs")
+cor_test <- cor(test_selected, use = "pairwise.complete.obs")
+
+cat("\n🔵 Blue: Strong Negative Correlation (-1)\n⚪ White: No Correlation (0)\n🔴 Red: Strong Positive Correlation (+1)")
+
+pheatmap(cor_train,
+         main = "Training Set Correlation Heatmap",
+         color = colorRampPalette(c("blue", "white", "red"))(100),
+         legend = TRUE,
+         legend_breaks = seq(-1, 1, by = 0.5),
+         legend_labels = seq(-1, 1, by = 0.5))
+
+pheatmap(cor_test,
+         main = "Test Set Correlation Heatmap",
+         color = colorRampPalette(c("blue", "white", "red"))(100),
+         legend = TRUE,
+         legend_breaks = seq(-1, 1, by = 0.5),
+         legend_labels = seq(-1, 1, by = 0.5))
+
+
+
+
+```
+
+# Section 2
+
+```{r}
+#Regularized Logistic Regression
+
+required_pkgs <- c("glmnet", "grpreg", "pROC", "dplyr", "VennDiagram")
+for (pkg in required_pkgs) {
+  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
+  library(pkg, character.only = TRUE)
+}
+
+# Mapping variables and constructing matrix
+selected_info <- protein_info %>% filter(SomaId %in% selected_vars)
+selected_ids <- selected_info$SomaId
+selected_groups <- selected_info$Target
+
+X_train <- as.matrix(dplyr::select(train, all_of(selected_ids)))
+X_test <- as.matrix(dplyr::select(test, all_of(selected_ids)))
+y_train <- train$Outcome
+y_test <- test$Outcome
+
+if (ncol(X_train) < 2) stop("X_train has less than 2 columns. Cannot run glmnet.")
+
+#LASSO
+lasso_model <- cv.glmnet(X_train, y_train, family = "binomial", alpha = 1)
+lasso_lambda <- lasso_model$lambda.min
+lasso_coef <- coef(lasso_model, s = lasso_lambda)
+lasso_selected_vars <- rownames(lasso_coef)[which(lasso_coef != 0)][-1]
+
+lasso_targets <- protein_info %>% 
+  filter(SomaId %in% lasso_selected_vars) %>%
+  dplyr::select(SomaId, Target)
+
+cat("LASSO selected", nrow(lasso_targets), "variables\n")
+print(lasso_targets)
+
+lasso_pred <- as.vector(predict(lasso_model, newx = X_test, type = "response", s = lasso_lambda))
+
+#Elastic Net
+elastic_model <- cv.glmnet(X_train, y_train, family = "binomial", alpha = 0.5)
+elastic_lambda <- elastic_model$lambda.min
+elastic_coef <- coef(elastic_model, s = elastic_lambda)
+elastic_selected_vars <- rownames(elastic_coef)[which(elastic_coef != 0)][-1]
+
+elastic_targets <- protein_info %>% 
+  filter(SomaId %in% elastic_selected_vars) %>%
+  dplyr::select(SomaId, Target)
+
+cat("\nElastic Net selected", nrow(elastic_targets), "variables\n")
+print(elastic_targets)
+
+elastic_pred <- as.vector(predict(elastic_model, newx = X_test, type = "response", s = elastic_lambda))
+
+#Group LASSO
+ordered_info <- selected_info %>% filter(SomaId %in% colnames(X_train))
+X_train_group <- X_train[, ordered_info$SomaId]
+X_test_group <- X_test[, ordered_info$SomaId]
+
+group_labels <- match(ordered_info$Target, unique(ordered_info$Target))
+
+group_lasso_model <- grpreg(X_train_group, y_train, group = group_labels, family = "binomial")
+group_lasso_selected <- grpreg::select(group_lasso_model, criterion = "BIC")
+group_lambda <- group_lasso_selected$lambda
+group_coef <- group_lasso_selected$beta
+group_selected_vars <- colnames(X_train_group)[which(group_coef[-1] != 0)]
+
+group_targets <- protein_info %>% 
+  filter(SomaId %in% group_selected_vars) %>%
+  dplyr::select(SomaId, Target)
+
+cat("\nGroup LASSO selected", nrow(group_targets), "variables\n")
+print(group_targets)
+
+group_pred <- as.vector(predict(group_lasso_model, X = X_test_group, type = "response", lambda = group_lambda))
+
+#AUC comparison
+lasso_auc <- auc(y_test, lasso_pred)
+elastic_auc <- auc(y_test, elastic_pred)
+group_auc <- auc(y_test, group_pred)
+
+cat("\nAUC Comparison:\n")
+cat(sprintf("LASSO AUC:        %.3f\n", lasso_auc))
+cat(sprintf("Elastic Net AUC:  %.3f\n", elastic_auc))
+cat(sprintf("Group LASSO AUC:  %.3f\n", group_auc))
+
+plot.roc(y_test, lasso_pred, col = "blue", main = "ROC Curve Comparison", lwd = 2)
+lines.roc(y_test, elastic_pred, col = "orange", lwd = 2)
+lines.roc(y_test, group_pred, col = "darkgreen", lwd = 2)
+legend("bottomright", legend = c("LASSO", "Elastic Net", "Group LASSO"),
+       col = c("blue", "orange", "darkgreen"), lwd = 2)
+
+#Variable overlap + discussion
+intersect_vars <- Reduce(intersect, list(lasso_selected_vars, elastic_selected_vars, group_selected_vars))
+intersect_targets <- protein_info %>%
+  filter(SomaId %in% intersect_vars) %>%
+  dplyr::select(SomaId, Target)
+
+cat("\nVariables selected by all three models:", nrow(intersect_targets), "\n")
+print(intersect_targets)
+
+
+venn.plot <- venn.diagram(
+  x = list(
+    LASSO = lasso_selected_vars,
+    ElasticNet = elastic_selected_vars,
+    GroupLASSO = group_selected_vars
+  ),
+  category.names = c("LASSO", "Elastic Net", "Group LASSO"),
+  filename = NULL,
+  output = TRUE,
+  fill = c("cornflowerblue", "darkorange", "seagreen"),
+  alpha = 0.5,
+  cex = 1.2,
+  cat.cex = 1.2,
+  cat.fontface = "bold",
+  main = "Variable Overlap Across Models"
+)
+
+grid.newpage()
+grid.draw(venn.plot)
+
+
+```
+
+# Section 3
+
+```{r}
+### Session 3: Model Integration and Performance Enhancement
+
+#Train Random Forest model
+if (!requireNamespace("randomForest", quietly = TRUE)) install.packages("randomForest")
+library(randomForest)
+
+set.seed(42)
+rf_model <- randomForest(x = X_train, y = as.factor(y_train), ntree = 500, mtry = sqrt(ncol(X_train)))
+rf_pred <- predict(rf_model, newdata = X_test, type = "prob")[, 2]
+rf_auc <- auc(y_test, rf_pred)
+cat("Random Forest AUC:", round(rf_auc, 3), "\n")
+
+#Train Gradient Boosting Machine (GBM) model
+if (!requireNamespace("gbm", quietly = TRUE)) install.packages("gbm")
+library(gbm)
+
+set.seed(42)
+gbm_model <- gbm(Outcome ~ ., data = data.frame(Outcome = y_train, X_train),
+                 distribution = "bernoulli", n.trees = 3000, interaction.depth = 3,
+                 shrinkage = 0.01, cv.folds = 5, verbose = FALSE)
+
+best_iter <- gbm.perf(gbm_model, method = "cv", plot.it = FALSE)
+gbm_pred <- predict(gbm_model, newdata = data.frame(X_test), n.trees = best_iter, type = "response")
+gbm_auc <- auc(y_test, gbm_pred)
+cat("GBM AUC:          ", round(gbm_auc, 3), "\n")
+
+#Compare Top 20 Features from RF, GBM, and Elastic Net
+top_rf <- names(sort(rf_model$importance[, 1], decreasing = TRUE))[1:20]
+gbm_summary <- summary(gbm_model, plotit = FALSE)
+top_gbm <- gbm_summary$var[1:20]
+top_elastic <- elastic_selected_vars[1:min(20, length(elastic_selected_vars))]
+
+cat("\nTop 20 RF variables:\n")
+print(top_rf)
+
+cat("\nTop 20 GBM variables:\n")
+print(top_gbm)
+
+cat("\nTop 20 Elastic Net variables:\n")
+print(top_elastic)
+
+
+```
+
+# Section 4
+
+```{r}
+### Session 4
+required_pkgs <- c("VennDiagram", "UpSetR", "pROC", "knitr")
+for (pkg in required_pkgs) {
+  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
+  library(pkg, character.only = TRUE)
+}
+
+plot.roc(y_test, lasso_pred, col = "blue", lwd = 2, main = "ROC Curve: All 5 Models")
+lines.roc(y_test, elastic_pred, col = "orange", lwd = 2)
+lines.roc(y_test, group_pred, col = "darkgreen", lwd = 2)
+lines.roc(y_test, rf_pred, col = "purple", lwd = 2)
+lines.roc(y_test, gbm_pred, col = "brown", lwd = 2)
+
+legend("bottomright",
+       legend = c("LASSO", "Elastic Net", "Group LASSO", "Random Forest", "GBM"),
+       col = c("blue", "orange", "darkgreen", "purple", "brown"),
+       lwd = 2)
+
+cat("\n--- Final AUC Summary ---\n")
+cat(sprintf("LASSO AUC:         %.3f\n", lasso_auc))
+cat(sprintf("Elastic Net AUC:   %.3f\n", elastic_auc))
+cat(sprintf("Group LASSO AUC:   %.3f\n", group_auc))
+cat(sprintf("Random Forest AUC: %.3f\n", rf_auc))
+cat(sprintf("GBM AUC:           %.3f\n", gbm_auc))
+
+
+cat("\nLASSO selected:", length(lasso_selected_vars), "variables\n")
+cat("Elastic Net selected:", length(elastic_selected_vars), "variables\n")
+cat("Group LASSO selected:", length(group_selected_vars), "variables\n")
+
+lasso_set <- unique(lasso_selected_vars)
+elastic_set <- unique(elastic_selected_vars)
+group_set <- unique(group_selected_vars)
+
+intersect_all <- Reduce(intersect, list(lasso_set, elastic_set, group_set))
+cat("Variables selected by all 3 models:", length(intersect_all), "\n")
+
+venn.plot <- VennDiagram::venn.diagram(
+  x = list(
+    LASSO = lasso_set,
+    ElasticNet = elastic_set,
+    GroupLASSO = group_set
+  ),
+  category.names = c("LASSO", "Elastic Net", "Group LASSO"),
+  filename = NULL,
+  output = TRUE,
+  fill = c("cornflowerblue", "darkorange", "seagreen"),
+  alpha = 0.5,
+  cex = 1.2,
+  cat.cex = 1.2,
+  cat.fontface = "bold",
+  main = "Variable Overlap Across Models"
+)
+grid.newpage()
+grid.draw(venn.plot)
+
+all_vars <- unique(c(lasso_set, elastic_set, group_set))
+upset_df <- data.frame(
+  Variable = all_vars,
+  LASSO = all_vars %in% lasso_set,
+  ElasticNet = all_vars %in% elastic_set,
+  GroupLASSO = all_vars %in% group_set
+)
+
+UpSetR::upset(
+  fromList(list(
+    LASSO = lasso_set,
+    ElasticNet = elastic_set,
+    GroupLASSO = group_set
+  )),
+  main.bar.color = "steelblue",
+  sets.bar.color = "grey40",
+  order.by = "freq"
+)
+
+cat("\nGroup LASSO selected", length(group_selected_vars), "variables:\n")
+kable(group_targets)
+
+```
